@@ -30,17 +30,40 @@
 
 #include "qcgaugewidget.h"
 
+#include <QPainter>
+#include <QtMath>
+#include <QResizeEvent>
+#include <QGraphicsBlurEffect>
+#include <QLabel>
+
+#include <qtlabb/common/qtlabb_diag.h>
+
+/**
+ * This is private QT API
+ */
+QT_BEGIN_NAMESPACE
+  extern Q_WIDGETS_EXPORT void qt_blurImage(QPainter *p, QImage &blurImage,
+	  qreal radius, bool quality, bool alphaOnly, int transposed = 0 );
+QT_END_NAMESPACE
+
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 
 QcGaugeWidget::QcGaugeWidget(QWidget *parent) :
-    QWidget(parent)
+    QWidget(parent),
+    mSizeChanged(true)
 {
     setMinimumSize(250,250);
 }
 
-QcBackgroundItem *QcGaugeWidget::addBackground(float position)
+
+QcGaugeWidget::~QcGaugeWidget()
+{
+	qDeleteAll(mItems);
+}
+
+QcBackgroundItem *QcGaugeWidget::addBackground(double position)
 {
     QcBackgroundItem * item = new QcBackgroundItem(this);
     item->setPosition(position);
@@ -48,7 +71,7 @@ QcBackgroundItem *QcGaugeWidget::addBackground(float position)
     return item;
 }
 
-QcDegreesItem *QcGaugeWidget::addDegrees(float position)
+QcDegreesItem *QcGaugeWidget::addDegrees(double position)
 {
     QcDegreesItem * item = new QcDegreesItem(this);
     item->setPosition(position);
@@ -58,7 +81,7 @@ QcDegreesItem *QcGaugeWidget::addDegrees(float position)
 }
 
 
-QcValuesItem *QcGaugeWidget::addValues(float position)
+QcValuesItem *QcGaugeWidget::addValues(double position)
 {
     QcValuesItem * item = new QcValuesItem(this);
     item->setPosition(position);
@@ -66,7 +89,7 @@ QcValuesItem *QcGaugeWidget::addValues(float position)
     return item;
 }
 
-QcArcItem *QcGaugeWidget::addArc(float position)
+QcArcItem *QcGaugeWidget::addArc(double position)
 {
     QcArcItem * item = new QcArcItem(this);
     item->setPosition(position);
@@ -74,7 +97,7 @@ QcArcItem *QcGaugeWidget::addArc(float position)
     return item;
 }
 
-QcColorBand *QcGaugeWidget::addColorBand(float position)
+QcColorBand *QcGaugeWidget::addColorBand(double position)
 {
     QcColorBand * item = new QcColorBand(this);
     item->setPosition(position);
@@ -82,7 +105,7 @@ QcColorBand *QcGaugeWidget::addColorBand(float position)
     return item;
 }
 
-QcNeedleItem *QcGaugeWidget::addNeedle(float position)
+QcNeedleItem *QcGaugeWidget::addNeedle(double position)
 {
     QcNeedleItem * item = new QcNeedleItem(this);
     item->setPosition(position);
@@ -90,7 +113,7 @@ QcNeedleItem *QcGaugeWidget::addNeedle(float position)
     return item;
 }
 
-QcLabelItem *QcGaugeWidget::addLabel(float position)
+QcLabelItem *QcGaugeWidget::addLabel(double position)
 {
     QcLabelItem * item = new QcLabelItem(this);
     item->setPosition(position);
@@ -98,7 +121,7 @@ QcLabelItem *QcGaugeWidget::addLabel(float position)
     return item;
 }
 
-QcGlassItem *QcGaugeWidget::addGlass(float position)
+QcGlassItem *QcGaugeWidget::addGlass(double position)
 {
     QcGlassItem * item = new QcGlassItem(this);
     item->setPosition(position);
@@ -106,25 +129,34 @@ QcGlassItem *QcGaugeWidget::addGlass(float position)
     return item;
 }
 
-QcAttitudeMeter *QcGaugeWidget::addAttitudeMeter(float position)
+QcAltitudeMeter *QcGaugeWidget::addAltitudeMeter(double position)
 {
-    QcAttitudeMeter * item = new QcAttitudeMeter(this);
+    QcAltitudeMeter * item = new QcAltitudeMeter(this);
     item->setPosition(position);
     mItems.append(item);
     return item;
 }
 
-void QcGaugeWidget::addItem(QcItem *item,float position)
+void QcGaugeWidget::addItem(QcItem *item, double position)
 {
-    // takes parentship of the item
-    item->setParent(this);
     item->setPosition(position);
     mItems.append(item);
 }
 
-int QcGaugeWidget::removeItem(QcItem *item)
+bool QcGaugeWidget::removeItem(QcItem *item)
 {
-   return mItems.removeAll(item);
+	QList<QcItem*>::iterator it;
+	it = mItems.begin();
+	for (; it != mItems.end(); ++it)
+	{
+		if (*it == item)
+		{
+			mItems.erase(it);
+			return true;
+		}
+	}
+
+	return false;
 }
 
 QList<QcItem *> QcGaugeWidget::items()
@@ -132,27 +164,130 @@ QList<QcItem *> QcGaugeWidget::items()
     return mItems;
 }
 
-
-void QcGaugeWidget::paintEvent(QPaintEvent */*paintEvt*/)
+int QcGaugeWidget::heightForWidth(int w) const
 {
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing);
+	return w;
+}
 
-    foreach (QcItem * item, mItems) {
-        item->draw(&painter);
+
+int QcGaugeWidget::diameter() const
+{
+	return qMin(rect().width(), rect().height());
+}
+
+
+QImage QcGaugeWidget::createBufferImage() const
+{
+	int Diameter = diameter();
+	return QImage(QSize(Diameter, Diameter), QImage::Format_ARGB32_Premultiplied);
+}
+
+
+void QcGaugeWidget::updateBufferImages()
+{
+	mNeedleItemIndex = -1;
+	mBackgroundBuffer = createBufferImage();
+	mBackgroundBuffer.fill(qRgba(0, 0, 0, 0));
+	mForegeroundBuffer = createBufferImage();
+	mForegeroundBuffer.fill(qRgba(0, 0, 0, 0));
+
+	int i = 0;
+	QPainter BackgroundPainter(&mBackgroundBuffer);
+	BackgroundPainter.setRenderHints(QPainter::Antialiasing);
+	for (; i < mItems.size(); ++i)
+	{
+		QcNeedleItem* NeedleItem = dynamic_cast<QcNeedleItem*>(mItems.at(i));
+		if (NeedleItem)
+		{
+			mNeedleItemIndex = i;
+			i++;
+			break;
+		}
+
+		mItems.at(i)->draw(&BackgroundPainter);
+	}
+
+	QPainter ForegroundPainter(&mForegeroundBuffer);
+	ForegroundPainter.setRenderHints(QPainter::Antialiasing);
+	for (; i < mItems.size(); ++i)
+	{
+		mItems.at(i)->draw(&ForegroundPainter);
+	}
+	mSizeChanged = false;
+}
+
+
+QImage QcGaugeWidget::blurShadowImage(QImage& Source) const
+{
+	double Radius = diameter() / 2.0;
+	double BlurRadius = Radius / 20;
+	int ImageBorderSize = BlurRadius / 2;
+	QImage ExtendedSource(Source.size() + QSize(ImageBorderSize * 2, ImageBorderSize * 2), QImage::Format_ARGB32_Premultiplied);
+	ExtendedSource.fill(Qt::transparent);
+	{
+		QPainter Painter(&ExtendedSource);
+		Painter.drawImage(QPoint(ImageBorderSize, ImageBorderSize), Source);
+	}
+
+	QImage BlurredImage(ExtendedSource.size(), QImage::Format_ARGB32_Premultiplied);
+    BlurredImage.fill(Qt::transparent);
+    QPainter Painter(&BlurredImage);
+    qt_blurImage(&Painter, ExtendedSource, BlurRadius, false, false );//blur radius: 2px
+    return BlurredImage;
+}
+
+
+QBrush QcGaugeWidget::shadowBrush() const
+{
+	return QBrush(QColor(0, 0, 0, 160));
+}
+
+QPointF QcGaugeWidget::shadowOffset() const
+{
+	double WidgetRadius = diameter() / 2.0;
+	QPointF ShadowOffset(0.02, 0.03);
+	return ShadowOffset * WidgetRadius;
+}
+
+
+void QcGaugeWidget::paintEvent(QPaintEvent* PaintEvent)
+{
+	if (mSizeChanged)
+	{
+		updateBufferImages();
+	}
+
+	QWidget::paintEvent(PaintEvent);
+	QPainter painter(this);
+	int Radius = diameter() / 2;
+	painter.translate(rect().center().x() - Radius, rect().center().y() - Radius);
+	painter.setRenderHint(QPainter::Antialiasing);
+    painter.drawImage(QPointF(0, 0), mBackgroundBuffer);
+    if (mNeedleItemIndex)
+    {
+    	mItems.at(mNeedleItemIndex)->draw(&painter);
     }
+    painter.drawImage(QPointF(0, 0), mForegeroundBuffer);
+}
+
+
+void QcGaugeWidget::resizeEvent(QResizeEvent* event)
+{
+	mSizeChanged = true;
+	QWidget::resizeEvent(event);
+	emit sizeChanged(event->size());
 }
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 
-QcItem::QcItem(QObject *parent) :
-    QObject(parent)
+QcItem::QcItem(QcGaugeWidget* ParentWidget)
+	: mGaugeWidget(ParentWidget),
+	  mPosition(50)
 {
 
-    parentWidget = qobject_cast<QWidget*>(parent);
-    mPosition = 50;
 }
+
 
 int QcItem::type()
 {
@@ -161,20 +296,30 @@ int QcItem::type()
 
 void QcItem::update()
 {
-    parentWidget->update();
+    mGaugeWidget->update();
 }
 
-float QcItem::position()
+double QcItem::position() const
 {
     return mPosition;
 }
 
-QRectF QcItem::rect()
+QRectF QcItem::widgetRect() const
 {
-    return mRect;
+    QRect Rect = mGaugeWidget->rect();
+    int Diameter = qMin(Rect.width(), Rect.height());
+    Rect.setSize(QSize(Diameter, Diameter));
+    return Rect;
 }
 
-void QcItem::setPosition(float position)
+
+QRectF QcItem::itemRect() const
+{
+	return adjustRect(position());
+}
+
+
+void QcItem::setPosition(double position)
 {
     if(position>100)
         mPosition = 100;
@@ -185,39 +330,26 @@ void QcItem::setPosition(float position)
     update();
 }
 
-QRectF QcItem::adjustRect(float percentage)
+QRectF QcItem::adjustRect(double percentage) const
 {
-    float r = getRadius(mRect);
-    float offset =   r-(percentage*r)/100.0;
-    QRectF tmpRect = mRect.adjusted(offset,offset,-offset,-offset);
-    return tmpRect;
+	QRectF Rect = widgetRect();
+    double r = getRadius(Rect);
+    double offset =   r - (percentage * r) / 100.0;
+    return Rect.adjusted(offset, offset, -offset, -offset);
 }
 
-float QcItem::getRadius(const QRectF &tmpRect)
+double QcItem::getRadius(const QRectF &tmpRect)
 {
-    float r = 0;
-    if(tmpRect.width()<tmpRect.height())
-        r = tmpRect.width()/2.0;
-    else
-        r = tmpRect.height()/2.0;
-    return r;
+    double Diameter = qMin(tmpRect.width(), tmpRect.height());
+    return Diameter / 2.0;
 }
 
-QRectF QcItem::resetRect()
-{
-    mRect = parentWidget->rect();
-    float r = getRadius(mRect);
-    mRect.setWidth(2.0*r);
-    mRect.setHeight(2.0*r);
-    mRect.moveCenter(parentWidget->rect().center());
-    return mRect;
-}
 
-QPointF QcItem::getPoint(float deg,const QRectF &tmpRect)
+QPointF QcItem::getPoint(double deg,const QRectF &tmpRect)
 {
-    float r = getRadius(tmpRect);
-    float xx=cos(qDegreesToRadians(deg))*r;
-    float yy=sin(qDegreesToRadians(deg))*r;
+    double r = getRadius(tmpRect);
+    double xx=cos(qDegreesToRadians(deg))*r;
+    double yy=sin(qDegreesToRadians(deg))*r;
     QPointF pt;
     xx=tmpRect.center().x()-xx;
     yy=tmpRect.center().y()-yy;
@@ -228,10 +360,10 @@ QPointF QcItem::getPoint(float deg,const QRectF &tmpRect)
 
 
 
-float QcItem::getAngle(const QPointF&pt, const QRectF &tmpRect)
+double QcItem::getAngle(const QPointF&pt, const QRectF &tmpRect)
 {
-    float xx=tmpRect.center().x()-pt.x();
-    float yy=tmpRect.center().y()-pt.y();
+    double xx = tmpRect.center().x()-pt.x();
+    double yy = tmpRect.center().y()-pt.y();
     return qRadiansToDegrees( atan2(yy,xx));
 }
 
@@ -239,16 +371,17 @@ float QcItem::getAngle(const QPointF&pt, const QRectF &tmpRect)
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 
-QcScaleItem::QcScaleItem(QObject *parent) :
-    QcItem(parent)
+QcScaleItem::QcScaleItem(QcGaugeWidget* ParentWidget) :
+    QcItem(ParentWidget),
+    mMinValue(0),
+    mMaxValue(100),
+    mMinDegree(-45),
+    mMaxDegree(225)
 {
-    mMinDegree = -45;
-    mMaxDegree = 225;
-    mMinValue = 0;
-    mMaxValue = 100;
+
 }
 
-void QcScaleItem::setValueRange(float minValue, float maxValue)
+void QcScaleItem::setRange(double minValue, double maxValue)
 {
     if(!(minValue<maxValue))
         throw( InvalidValueRange);
@@ -257,7 +390,7 @@ void QcScaleItem::setValueRange(float minValue, float maxValue)
 
 }
 
-void QcScaleItem::setDgereeRange(float minDegree, float maxDegree)
+void QcScaleItem::setDegreeRange(double minDegree, double maxDegree)
 {
     if(!(minDegree<maxDegree))
         throw( InvalidValueRange);
@@ -265,15 +398,15 @@ void QcScaleItem::setDgereeRange(float minDegree, float maxDegree)
     mMaxDegree = maxDegree;
 }
 
-float QcScaleItem::getDegFromValue(float v)
+double QcScaleItem::getDegFromValue(double v) const
 {
-    float a = (mMaxDegree-mMinDegree)/(mMaxValue-mMinValue);
-    float b = -a*mMinValue+mMinDegree;
+    double a = (mMaxDegree-mMinDegree)/(mMaxValue-mMinValue);
+    double b = -a*mMinValue+mMinDegree;
     return a*v+b;
 }
 
 
-void QcScaleItem::setMinValue(float minValue)
+void QcScaleItem::setMinimumValue(double minValue)
 {
     if(minValue>mMaxValue)
         throw (InvalidValueRange);
@@ -282,7 +415,7 @@ void QcScaleItem::setMinValue(float minValue)
 }
 
 
-void QcScaleItem::setMaxValue(float maxValue)
+void QcScaleItem::setMaximumValue(double maxValue)
 {
     if(maxValue<mMinValue )
         throw (InvalidValueRange);
@@ -290,14 +423,14 @@ void QcScaleItem::setMaxValue(float maxValue)
     update();
 }
 
-void QcScaleItem::setMinDegree(float minDegree)
+void QcScaleItem::setMinimumValueAngle(double minDegree)
 {
     if(minDegree>mMaxDegree)
         throw (InvalidDegreeRange);
     mMinDegree = minDegree;
     update();
 }
-void QcScaleItem::setMaxDegree(float maxDegree)
+void QcScaleItem::setMaximumValueAngle(double maxDegree)
 {
     if(maxDegree<mMinDegree)
         throw (InvalidDegreeRange);
@@ -309,8 +442,9 @@ void QcScaleItem::setMaxDegree(float maxDegree)
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 
-QcBackgroundItem::QcBackgroundItem(QObject *parent) :
-    QcItem(parent)
+QcBackgroundItem::QcBackgroundItem(QcGaugeWidget* ParentWidget) :
+    QcItem(ParentWidget),
+    mBrush(Qt::darkGray)
 {
     setPosition(88);
     mPen = Qt::NoPen;
@@ -318,90 +452,287 @@ QcBackgroundItem::QcBackgroundItem(QObject *parent) :
 
     addColor(0.4,Qt::darkGray);
     addColor(0.8,Qt::black);
+}
+
+
+QcBackgroundItem::~QcBackgroundItem()
+{
 
 }
 
 
 void QcBackgroundItem::draw(QPainter* painter)
 {
-    QRectF tmpRect = resetRect();
-    painter->setBrush(Qt::NoBrush);
-    QLinearGradient linearGrad(tmpRect.topLeft(), tmpRect.bottomRight());
-    for(int i = 0;i<mColors.size();i++){
-        linearGrad.setColorAt(mColors[i].first,mColors[i].second);
+    QRectF tmpRect = widgetRect();
+
+    if (mDropShadow)
+    {
+		QPointF ShadowOffset = mGaugeWidget->shadowOffset();
+		painter->save();
+		painter->setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+		painter->translate(-(mDropShadowImage.width() / 2.0) + ShadowOffset.x(),
+			-(mDropShadowImage.height() / 2.0) +  ShadowOffset.y());
+		painter->drawImage(itemRect().center(), mDropShadowImage);
+		painter->restore();
     }
+
+    if (!mColors.empty())
+    {
+		QLinearGradient linearGrad(tmpRect.topLeft(), tmpRect.bottomRight());
+		for(int i = 0;i<mColors.size();i++){
+			linearGrad.setColorAt(mColors[i].first,mColors[i].second);
+		}
+		painter->setBrush(linearGrad);
+    }
+    else
+    {
+    	painter->setBrush(mBrush);
+    }
+
     painter->setPen(mPen);
-    painter->setBrush(linearGrad);
-    painter->drawEllipse(adjustRect(position()));
+    painter->drawEllipse(itemRect());
 }
 
-void QcBackgroundItem::addColor(float position, const QColor &color)
+void QcBackgroundItem::addColor(double position, const QColor &color)
 {
     if(position<0||position>1)
         return;
-      QPair<float,QColor> pair;
+      QPair<double,QColor> pair;
       pair.first = position;
       pair.second = color;
       mColors.append(pair);
       update();
 }
 
-void QcBackgroundItem::clearrColors()
+void QcBackgroundItem::clearColors()
 {
     mColors.clear();
+}
+
+
+void QcBackgroundItem::setDropShadow(bool DropShadow)
+{
+	mDropShadow = DropShadow;
+	if (DropShadow)
+	{
+		updateDropShadowImage();
+		connect(mGaugeWidget, SIGNAL(sizeChanged(const QSize&)), this,
+			SLOT(onWidgetSizeChanged(const QSize&)));
+	}
+	else
+	{
+		mDropShadowImage = QImage();
+		disconnect(mGaugeWidget, SIGNAL(sizeChanged(const QSize&)), this,
+			SLOT(onWidgetSizeChanged(const QSize&)));
+	}
+}
+
+
+bool QcBackgroundItem::dropShadow() const
+{
+	return mDropShadow;
+}
+
+
+void QcBackgroundItem::onWidgetSizeChanged(const QSize& Size)
+{
+	updateDropShadowImage();
+}
+
+
+void QcBackgroundItem::updateDropShadowImage()
+{
+	if (!mDropShadow)
+	{
+		return;
+	}
+
+	QRectF tmpRect = itemRect();
+	tmpRect.moveTopLeft(QPointF(0, 0));
+	QImage ShadowImage(tmpRect.size().toSize(), QImage::Format_ARGB32_Premultiplied);
+    ShadowImage.fill(Qt::transparent);
+    {
+    	QPainter Painter(&ShadowImage);
+		Painter.setRenderHint(QPainter::Antialiasing);
+		Painter.setBrush(QColor(0, 0, 0, 160));
+		Painter.setPen(Qt::NoPen);
+		Painter.drawEllipse(tmpRect);
+    }
+    mDropShadowImage = mGaugeWidget->blurShadowImage(ShadowImage);
+}
+
+
+void QcBackgroundItem::setBrush(const QBrush& Brush)
+{
+	mBrush = Brush;
+	update();
+}
+
+const QBrush& QcBackgroundItem::brush() const
+{
+	return mBrush;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 
-QcGlassItem::QcGlassItem(QObject *parent) :
-    QcItem(parent)
+QcGlassItem::QcGlassItem(QcGaugeWidget* ParentWidget) :
+    QcItem(ParentWidget),
+    mGlassType(CurvedGlass2)
 {
     setPosition(88);
 }
 
 void QcGlassItem::draw(QPainter *painter)
 {
-    resetRect();
-    QRectF tmpRect1 = adjustRect(position());
-    QRectF tmpRect2 = tmpRect1;
-    float r = getRadius(tmpRect1);
-    tmpRect2.setHeight(r/2.0);
+    QColor clr1(Qt::white);
+    QLinearGradient linearGrad1;
+    linearGrad1.setCoordinateMode(QGradient::ObjectBoundingMode);
+    linearGrad1.setStart(0,0);
+    linearGrad1.setFinalStop(0,1);
+    clr1.setAlphaF(0.7);
+    linearGrad1.setColorAt(0, clr1);
+    clr1.setAlphaF(0.35);
+    linearGrad1.setColorAt(0.4, clr1);
+    clr1.setAlphaF(0.15);
+    linearGrad1.setColorAt(1, clr1);
+
+	QPainterPath Path;
+	QBrush Brush(linearGrad1);
+	switch (mGlassType)
+	{
+		case StronglyCurvedGlass: createStronglyCurvedGlass(Path, Brush); break;
+		case CurvedGlass1: createCurvedGlass1(Path, Brush); break;
+		case CurvedGlass2: createCurvedGlass2(Path, Brush); break;
+		case FlatGlass: createFlatGlass(Path, Brush); break;
+		case FlatGlass2: createFlatGlass2(Path, Brush); break;
+		default:
+			createStronglyCurvedGlass(Path, Brush); break;
+	}
+    painter->setBrush(Brush);
     painter->setPen(Qt::NoPen);
-
-    QColor clr1 = Qt::gray ;
-    QColor clr2 = Qt::white;
-    clr1.setAlphaF(0.2);
-    clr2.setAlphaF(0.4);
-
-    QLinearGradient linearGrad1(tmpRect1.topLeft(), tmpRect1.bottomRight());
-    linearGrad1.setColorAt(0.1, clr1);
-    linearGrad1.setColorAt(0.5, clr2);
-
-    painter->setBrush(linearGrad1);
-    painter->drawPie(tmpRect1,0,16*180);
-    tmpRect2.moveCenter(rect().center());
-    painter->drawPie(tmpRect2,0,-16*180);
+    painter->drawPath(Path);
 }
+
+
+void QcGlassItem::setGlassType(GlassType glassType)
+{
+	mGlassType = glassType;
+}
+
+
+void QcGlassItem::createStronglyCurvedGlass(QPainterPath& Path,
+	QBrush& Brush)
+{
+    static const double Angle = 2;
+
+	QRectF tmpRect1 = itemRect();
+    QPointF Start = getPoint(Angle, tmpRect1);
+    QPointF End = getPoint(180 - Angle, tmpRect1);
+    Path.moveTo(End);
+    Path.arcTo(tmpRect1, Angle, 180 - 2 * Angle);
+	QRectF tmpRect2;
+	tmpRect2.setWidth(qAbs(End.x() - Start.x()));
+	tmpRect2.setHeight(tmpRect1.height() / 5);
+	tmpRect2.moveCenter(QPointF(tmpRect1.center().x(), Start.y()));
+	Path.arcTo(tmpRect2, 180, 180);
+}
+
+
+void QcGlassItem::createCurvedGlass1(QPainterPath& Path,
+	QBrush& Brush)
+{
+    static const double Angle = 0;
+
+	QRectF tmpRect1 = itemRect();
+    QPointF Start = getPoint(Angle, tmpRect1);
+    QPointF End = getPoint(180 - Angle, tmpRect1);
+    Path.moveTo(End);
+    Path.arcTo(tmpRect1, Angle, 180 - 2 * Angle);
+    Path.quadTo(QPointF(tmpRect1.center().x(), Start.y() + tmpRect1.height() / 7), End);
+}
+
+
+void QcGlassItem::createCurvedGlass2(QPainterPath& Path,
+	QBrush& Brush)
+{
+    static const double Angle = 5;
+
+	QRectF tmpRect1 = itemRect();
+    QPointF Start = getPoint(Angle, tmpRect1);
+    QPointF End = getPoint(180 - Angle, tmpRect1);
+    Path.moveTo(End);
+    Path.arcTo(tmpRect1, Angle, 180 - 2 * Angle);
+    Path.quadTo(QPointF(tmpRect1.center().x(), Start.y() - tmpRect1.height() / 7), End);
+}
+
+
+void QcGlassItem::createFlatGlass(QPainterPath& Path,
+	QBrush& Brush)
+{
+	QRectF tmpRect1 = itemRect();
+    QColor clr1 = Qt::white;
+    QColor clr2 = Qt::white;
+    clr1.setAlphaF(0.6);
+    clr2.setAlphaF(0.1);
+
+    QLinearGradient linearGrad1(QPointF(0, tmpRect1.top()), QPointF(0, tmpRect1.bottom()));
+    linearGrad1.setColorAt(0, clr1);
+    linearGrad1.setColorAt(1, clr2);
+    Brush = QBrush(linearGrad1);
+
+    QPointF End = getPoint(100, tmpRect1);
+    Path.moveTo(End);
+    Path.arcTo(tmpRect1, 80, 160);
+}
+
+
+void QcGlassItem::createFlatGlass2(QPainterPath& Path, QBrush& Brush)
+{
+    static const double Angle = 10;
+    QRectF tmpRect1 = itemRect();
+
+    QColor clr1(Qt::white);
+    QLinearGradient linearGrad1;
+    linearGrad1.setCoordinateMode(QGradient::ObjectBoundingMode);
+    linearGrad1.setStart(0,0);
+    linearGrad1.setFinalStop(0, 0.7);
+    clr1.setAlphaF(0.7);
+    linearGrad1.setColorAt(0, clr1);
+    clr1.setAlphaF(0.3);
+    linearGrad1.setColorAt(0.4, clr1);
+    clr1.setAlphaF(0.2);
+    linearGrad1.setColorAt(1, clr1);
+    Brush = QBrush(linearGrad1);
+
+    QPointF Start = getPoint(Angle, tmpRect1);
+    QPointF End = getPoint(180 - Angle, tmpRect1);
+    Path.moveTo(End);
+    Path.arcTo(tmpRect1, Angle, 180 - 2 * Angle);
+    Path.cubicTo(QPointF(tmpRect1.center().x(), tmpRect1.center().y() + tmpRect1.height() / 12 ),
+    	QPointF(tmpRect1.center().x() + tmpRect1.width() / 8, End.y() - tmpRect1.height() / 4),
+    	QPointF(End.x(), Start.y()));
+}
+
+
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 
-QcLabelItem::QcLabelItem(QObject *parent) :
-    QcItem(parent)
+QcLabelItem::QcLabelItem(QcGaugeWidget* ParentWidget) :
+    QcItem(ParentWidget),
+    mAngle(270),
+    mText("%"),
+    mColor(Qt::black)
 {
     setPosition(50);
-    mAngle = 270;
-    mText = "%";
-    mColor = Qt::black;
 }
 
 void QcLabelItem::draw(QPainter *painter)
 {
-    resetRect();
-    QRectF tmpRect = adjustRect(position());
-    float r = getRadius(rect());
+    QRectF tmpRect = itemRect();
+    double r = getRadius(widgetRect());
     QFont font("Meiryo UI", r/10.0, QFont::Bold);
     painter->setFont(font);
     painter->setPen(QPen(mColor));
@@ -416,13 +747,13 @@ void QcLabelItem::draw(QPainter *painter)
 
 }
 
-void QcLabelItem::setAngle(float a)
+void QcLabelItem::setAngle(double a)
 {
     mAngle = a;
     update();
 }
 
-float QcLabelItem::angle()
+double QcLabelItem::angle() const
 {
     return mAngle;
 }
@@ -434,7 +765,7 @@ void QcLabelItem::setText(const QString &text, bool repaint)
         update();
 }
 
-QString QcLabelItem::text()
+const QString& QcLabelItem::text() const
 {
     return mText;
 }
@@ -445,7 +776,7 @@ void QcLabelItem::setColor(const QColor &color)
     update();
 }
 
-QColor QcLabelItem::color()
+const QColor& QcLabelItem::color() const
 {
     return mColor;
 }
@@ -454,18 +785,17 @@ QColor QcLabelItem::color()
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 
-QcArcItem::QcArcItem(QObject *parent) :
-    QcScaleItem(parent)
+QcArcItem::QcArcItem(QcGaugeWidget* ParentWidget) :
+    QcScaleItem(ParentWidget),
+    mColor(Qt::black)
 {
     setPosition(80);
-    mColor = Qt::black;
 }
 
 void QcArcItem::draw(QPainter *painter)
 {
-    resetRect();
-    QRectF tmpRect= adjustRect(position());
-    float r = getRadius(tmpRect);
+    QRectF tmpRect= itemRect();
+    double r = getRadius(tmpRect);
 
     QPen pen;
     pen.setColor(mColor);
@@ -482,12 +812,12 @@ void QcArcItem::setColor(const QColor &color)
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 
-QcColorBand::QcColorBand(QObject *parent) :
-    QcScaleItem(parent)
+QcColorBand::QcColorBand(QcGaugeWidget* ParentWidget) :
+    QcScaleItem(ParentWidget)
 {
     QColor tmpColor;
     tmpColor.setAlphaF(0.1);
-    QPair<QColor,float> pair;
+    QPair<QColor,double> pair;
 
     pair.first = Qt::green;
     pair.second = 10;
@@ -504,9 +834,9 @@ QcColorBand::QcColorBand(QObject *parent) :
     setPosition(50);
 }
 
-QPainterPath QcColorBand::createSubBand(float from, float sweep)
+QPainterPath QcColorBand::createSubBand(double from, double sweep)
 {
-    QRectF tmpRect = adjustRect(position());
+    QRectF tmpRect = itemRect();
     QPainterPath path;
     path.arcMoveTo(tmpRect,180+from);
     path.arcTo(tmpRect,180+from,-sweep);
@@ -515,16 +845,15 @@ QPainterPath QcColorBand::createSubBand(float from, float sweep)
 
 void QcColorBand::draw(QPainter *painter)
 {
-    resetRect();
-    float r = getRadius(rect());
+    double r = getRadius(widgetRect());
     QPen pen;
     pen.setCapStyle(Qt::FlatCap);
     pen.setWidthF(r/20.0);
     painter->setBrush(Qt::NoBrush);
-    float offset = getDegFromValue(mBandStartValue);
+    double offset = getDegFromValue(mBandStartValue);
     for(int i = 0;i<mBandColors.size();i++){
         QColor clr = mBandColors[i].first;
-        float sweep;
+        double sweep;
         if(i==0)
             sweep = getDegFromValue(mBandColors[i].second)-getDegFromValue(mMinValue);
         else
@@ -536,7 +865,7 @@ void QcColorBand::draw(QPainter *painter)
         painter->drawPath(path);
     }
 }
-void QcColorBand::setColors(const QList<QPair<QColor, float> > &colors)
+void QcColorBand::setColors(const QList<QPair<QColor, double> > &colors)
 {
     mBandColors = colors;
     update();
@@ -546,25 +875,24 @@ void QcColorBand::setColors(const QList<QPair<QColor, float> > &colors)
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 
-QcDegreesItem::QcDegreesItem(QObject *parent) :
-    QcScaleItem(parent)
+QcDegreesItem::QcDegreesItem(QcGaugeWidget* ParentWidget) :
+    QcScaleItem(ParentWidget),
+    mStep(10),
+    mColor(Qt::black),
+    mSubDegree(false)
 {
-    mStep = 10;
-    mColor = Qt::black;
-    mSubDegree = false;
     setPosition(90);
 }
 
 
 void QcDegreesItem::draw(QPainter *painter)
 {
-    resetRect();
-    QRectF tmpRect = adjustRect(position());
+    QRectF tmpRect = itemRect();
 
     painter->setPen(mColor);
-    float r = getRadius(tmpRect);
-    for(float val = mMinValue;val<=mMaxValue;val+=mStep){
-        float deg = getDegFromValue(val);
+    double r = getRadius(tmpRect);
+    for(double val = mMinValue;val<=mMaxValue;val+=mStep){
+        double deg = getDegFromValue(val);
         QPointF pt = getPoint(deg,tmpRect);
         QPainterPath path;
         path.moveTo(pt);
@@ -583,7 +911,7 @@ void QcDegreesItem::draw(QPainter *painter)
     }
 }
 
-void QcDegreesItem::setStep(float step)
+void QcDegreesItem::setStep(double step)
 {
     mStep = step;
     update();
@@ -605,59 +933,108 @@ void QcDegreesItem::setSubDegree(bool b)
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 
-QcNeedleItem::QcNeedleItem(QObject *parent) :
-    QcScaleItem(parent)
+QcNeedleItem::QcNeedleItem(QcGaugeWidget* ParentWidget) :
+	QObject(0),
+    QcScaleItem(ParentWidget),
+    mCurrentValue(0),
+    mNeedleType(FeatherNeedle),
+    mLabel(0),
+    mBrush(Qt::black),
+    mDropShadow(false)
 {
-    mCurrentValue = 0;
-    mColor = Qt::black;
-    mLabel = NULL;
-    mNeedleType = FeatherNeedle;
+	connect(ParentWidget, SIGNAL(sizeChanged(const QSize&)), this,
+		SLOT(onWidgetSizeChanged(const QSize&)));
 }
 
 void QcNeedleItem::draw(QPainter *painter)
 {
-    resetRect();
-    QRectF tmpRect = adjustRect(position());
+	if (mLabel)
+	{
+		mLabel->draw(painter);
+	}
+
+    QRectF tmpRect = itemRect();
     painter->save();
     painter->translate(tmpRect.center());
-    float deg = getDegFromValue( mCurrentValue);
-    painter->rotate(deg+90.0);
-    painter->setBrush(QBrush(mColor));
+    double deg = getDegFromValue( mCurrentValue);
     painter->setPen(Qt::NoPen);
 
-    QLinearGradient grad;
+    double Radius = getRadius(tmpRect);
+    QPolygonF NeedlePoly = createNeedlePoly(Radius);
+    QBrush Brush(mBrush);
 
-    switch (mNeedleType) {
-    case QcNeedleItem::FeatherNeedle:
-        createFeatherNeedle(getRadius(tmpRect));
-        break;
-    case QcNeedleItem::DiamonNeedle:
-        createDiamonNeedle(getRadius(tmpRect));
-        break;
-    case QcNeedleItem::TriangleNeedle:
-        createTriangleNeedle(getRadius(tmpRect));
-        break;
-    case QcNeedleItem::AttitudeMeterNeedle:
-        createAttitudeNeedle(getRadius(tmpRect));
-        break;
-    case QcNeedleItem::CompassNeedle:
-        createCompassNeedle(getRadius(tmpRect));
-        grad.setStart(mNeedlePoly[0]);
-        grad.setFinalStop(mNeedlePoly[1]);
-        grad.setColorAt(0.9,Qt::red);
-        grad.setColorAt(1,Qt::blue);
-        painter->setBrush(grad);
-
-        break;
-
-    default:
-        break;
+    // draw the shadow
+    if (mDropShadow)
+    {
+		int yOffset = round((mDropShadowImage.height() - NeedlePoly.boundingRect().height()) / 2.0 - NeedlePoly.boundingRect().top());
+		painter->save();
+		painter->setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+		painter->translate(mGaugeWidget->shadowOffset());
+		painter->rotate(deg + 90.0);
+		painter->translate(QPointF(0, -yOffset));
+		painter->drawImage(QPointF(-(mDropShadowImage.width() / 2), 0), mDropShadowImage);
+		painter->restore();
     }
-    painter->drawConvexPolygon(mNeedlePoly);
+
+    // Draw the needle
+    painter->setBrush(Brush);
+    painter->rotate(deg + 90.0);
+    painter->drawConvexPolygon(NeedlePoly);
     painter->restore();
 }
 
-void QcNeedleItem::setCurrentValue(float value)
+
+void QcNeedleItem::setDropShadow(bool DropShadow)
+{
+	mDropShadow = DropShadow;
+	if (!DropShadow)
+	{
+		mDropShadowImage = QImage();
+	}
+	else
+	{
+		updateDropShadowImage();
+	}
+}
+
+
+bool QcNeedleItem::dropShadow() const
+{
+	return mDropShadow;
+}
+
+
+void QcNeedleItem::updateDropShadowImage()
+{
+	if (!mDropShadow)
+	{
+		return;
+	}
+
+    QRectF tmpRect = itemRect();
+	double Radius = getRadius(tmpRect);
+	QPolygonF NeedlePoly = createNeedlePoly(Radius);
+    QImage ShadowImage(NeedlePoly.boundingRect().size().toSize(), QImage::Format_ARGB32_Premultiplied);
+    ShadowImage.fill(Qt::transparent);
+    {
+    	QPainter Painter(&ShadowImage);
+		Painter.setRenderHint(QPainter::Antialiasing);
+		Painter.setBrush(mGaugeWidget->shadowBrush());
+		Painter.setPen(Qt::NoPen);
+		Painter.translate(NeedlePoly.boundingRect().width() / 2, - NeedlePoly.boundingRect().top());
+		Painter.drawConvexPolygon(NeedlePoly);
+    }
+    mDropShadowImage = mGaugeWidget->blurShadowImage(ShadowImage);
+}
+
+
+void QcNeedleItem::onWidgetSizeChanged(const QSize& Size)
+{
+	updateDropShadowImage();
+}
+
+
+void QcNeedleItem::setValue(double value)
 {
     if(value<mMinValue)
         mCurrentValue = mMinValue;
@@ -670,29 +1047,58 @@ void QcNeedleItem::setCurrentValue(float value)
     update();
 }
 
-float QcNeedleItem::currentValue()
+double QcNeedleItem::value() const
 {
     return mCurrentValue;
 }
 
+
+void QcNeedleItem::setValueRange(double minValue,double maxValue)
+{
+	QcScaleItem::setRange(minValue, maxValue);
+}
+
+void QcNeedleItem::setMinimumValue(double minValue)
+{
+	QcScaleItem::setMinimumValue(minValue);
+}
+
+
+void QcNeedleItem::setMaximumValue(double maxValue)
+{
+	QcScaleItem::setMaximumValue(maxValue);
+}
+
 void QcNeedleItem::setColor(const QColor &color)
 {
-    mColor = color;
+    mBrush.setColor(color);
     update();
 }
 
-QColor QcNeedleItem::color()
+const QColor& QcNeedleItem::color() const
 {
-    return mColor;
+    return mBrush.color();
+}
+
+
+void QcNeedleItem::setBrush(const QBrush& Brush)
+{
+	mBrush = Brush;
+}
+
+const QBrush& QcNeedleItem::brush() const
+{
+	return mBrush;
 }
 
 void QcNeedleItem::setLabel(QcLabelItem *label)
 {
     mLabel = label;
+    mGaugeWidget->removeItem(label);
     update();
 }
 
-QcLabelItem *QcNeedleItem::label()
+QcLabelItem *QcNeedleItem::label() const
 {
     return mLabel;
 }
@@ -701,30 +1107,49 @@ QcLabelItem *QcNeedleItem::label()
 void QcNeedleItem::setNeedle(QcNeedleItem::NeedleType needleType)
 {
     mNeedleType = needleType;
+    if (CompassNeedle == needleType)
+    {
+    	QLinearGradient grad;
+    	grad.setCoordinateMode(QGradient::ObjectBoundingMode);
+    	grad.setFinalStop(QPointF(0, 1));
+    	grad.setColorAt(0.0,Qt::red);
+        grad.setColorAt(0.49,Qt::red);
+        grad.setColorAt(0.5,Qt::blue);
+        grad.setColorAt(1,Qt::blue);
+        mBrush = QBrush(grad);
+    }
     update();
 }
 
 
-void QcNeedleItem::createDiamonNeedle(float r)
+void QcNeedleItem::setCustomNeedle(const QVector<QPointF>& NeedlePoly)
+{
+	mNeedleType = CustomNeedle;
+	mCustomNeedlePoly = NeedlePoly;
+    update();
+}
+
+
+QPolygonF QcNeedleItem::createDiamonNeedle(double r) const
 {
     QVector<QPointF> tmpPoints;
     tmpPoints.append(QPointF(0.0, 0.0));
     tmpPoints.append(QPointF(-r/20.0,r/20.0));
     tmpPoints.append(QPointF(0.0, r));
     tmpPoints.append(QPointF(r/20.0,r/20.0));
-    mNeedlePoly = tmpPoints;
+    return tmpPoints;
 }
 
-void QcNeedleItem::createTriangleNeedle(float r)
+QPolygonF QcNeedleItem::createTriangleNeedle(double r) const
 {
     QVector<QPointF> tmpPoints;
     tmpPoints.append(QPointF(0.0, r));
-    tmpPoints.append(QPointF(-r/40.0, 0.0));
-    tmpPoints.append(QPointF(r/40.0,0.0));
-    mNeedlePoly = tmpPoints;
+    tmpPoints.append(QPointF(-r/40, 0.0));
+    tmpPoints.append(QPointF(r/40,0.0));
+    return tmpPoints;
 }
 
-void QcNeedleItem::createFeatherNeedle(float r)
+QPolygonF QcNeedleItem::createFeatherNeedle(double r) const
 {
     QVector<QPointF> tmpPoints;
     tmpPoints.append(QPointF(0.0, r));
@@ -732,52 +1157,80 @@ void QcNeedleItem::createFeatherNeedle(float r)
     tmpPoints.append(QPointF(-r/15.0, -r/5.0));
     tmpPoints.append(QPointF(r/15.0,-r/5));
     tmpPoints.append(QPointF(r/40.0,0.0));
-    mNeedlePoly = tmpPoints;
+    return tmpPoints;
 }
 
-void QcNeedleItem::createAttitudeNeedle(float r)
+QPolygonF QcNeedleItem::createAttitudeNeedle(double r) const
 {
     QVector<QPointF> tmpPoints;
     tmpPoints.append(QPointF(0.0, r));
     tmpPoints.append(QPointF(-r/20.0, 0.85*r));
     tmpPoints.append(QPointF(r/20.0,0.85*r));
-    mNeedlePoly = tmpPoints;
+    return tmpPoints;
 }
 
-void QcNeedleItem::createCompassNeedle(float r)
+QPolygonF QcNeedleItem::createCompassNeedle(double r) const
 {
     QVector<QPointF> tmpPoints;
     tmpPoints.append(QPointF(0.0, r));
     tmpPoints.append(QPointF(-r/15.0, 0.0));
     tmpPoints.append(QPointF(0.0, -r));
     tmpPoints.append(QPointF(r/15.0,0.0));
-    mNeedlePoly = tmpPoints;
+    return tmpPoints;
+}
+
+
+QPolygonF QcNeedleItem::createCustomNeedle(double r) const
+{
+	QVector<QPointF> tmpPoints(mCustomNeedlePoly);
+	for (int i = 0; i < tmpPoints.size(); ++i)
+	{
+		tmpPoints[i] *= r;
+	}
+
+	return tmpPoints;
+}
+
+
+QPolygonF QcNeedleItem::createNeedlePoly(double Radius) const
+{
+    switch (mNeedleType)
+    {
+    case QcNeedleItem::FeatherNeedle: return createFeatherNeedle(Radius);
+    case QcNeedleItem::DiamonNeedle: return createDiamonNeedle(Radius);
+    case QcNeedleItem::TriangleNeedle: return createTriangleNeedle(Radius);
+    case QcNeedleItem::AltitudeMeterNeedle: return createAttitudeNeedle(Radius);
+    case QcNeedleItem::CompassNeedle: return createCompassNeedle(Radius);
+    case QcNeedleItem::CustomNeedle: return createCustomNeedle(Radius);
+    default:
+        return createTriangleNeedle(Radius);
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 
-QcValuesItem::QcValuesItem(QObject *parent) :
-    QcScaleItem(parent)
+QcValuesItem::QcValuesItem(QcGaugeWidget* ParentWidget) :
+    QcScaleItem(ParentWidget),
+    mStep(10),
+    mColor(Qt::black),
+    mFont("Meiryo UI",0, QFont::Bold)
 {
     setPosition(70);
-    mColor = Qt::black;
-    mStep = 10;
 }
 
 
 void QcValuesItem::draw(QPainter*painter)
 {
-    QRectF  tmpRect = resetRect();
-    float r = getRadius(adjustRect(99));
-    QFont font("Meiryo UI",0, QFont::Bold);
-    font.setPointSizeF(0.08*r);
+    QRectF tmpRect = widgetRect();
+    double r = getRadius(adjustRect(99));
+    mFont.setPointSizeF(0.08 * r);
 
-    painter->setFont(font);
+    painter->setFont(mFont);
     painter->setPen(mColor);
-    for(float val = mMinValue;val<=mMaxValue;val+=mStep){
-        float deg = getDegFromValue(val);
+    for(double val = mMinValue;val<=mMaxValue;val+=mStep){
+        double deg = getDegFromValue(val);
         QPointF pt = getPoint(deg,tmpRect);
         QPainterPath path;
         path.moveTo(pt);
@@ -793,7 +1246,7 @@ void QcValuesItem::draw(QPainter*painter)
     }
 }
 
-void QcValuesItem::setStep(float step)
+void QcValuesItem::setStep(double step)
 {
     mStep = step;
 }
@@ -804,42 +1257,55 @@ void QcValuesItem::setColor(const QColor& color)
     mColor = color;
 }
 
-///////////////////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////////////////
-
-QcAttitudeMeter::QcAttitudeMeter(QObject *parent) :
-    QcItem(parent)
+void QcValuesItem::setFont(const QFont& font)
 {
-    mPitch = 0;
-    mRoll = 0;
+	mFont = font;
+	update();
 }
 
-void QcAttitudeMeter::setCurrentPitch(float pitch)
+
+const QFont& QcValuesItem::font() const
+{
+	return mFont;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////
+
+QcAltitudeMeter::QcAltitudeMeter(QcGaugeWidget* ParentWidget) :
+    QcItem(ParentWidget),
+    mRoll(0),
+    mPitch(0)
+{
+
+}
+
+void QcAltitudeMeter::setCurrentPitch(double pitch)
 {
     mPitch=-pitch;
     update();
 }
 
-void QcAttitudeMeter::setCurrentRoll(float roll)
+void QcAltitudeMeter::setCurrentRoll(double roll)
 {
     mRoll = roll;
     update();
 }
 
-QPointF QcAttitudeMeter::getIntersection(float r, const QPointF &pitchPoint, const QPointF &pt)
+QPointF QcAltitudeMeter::intersection(double r, const QPointF &pitchPoint, const QPointF &pt) const
 {
     // refrence it to zero
 
     Q_UNUSED(r)
-    float a = (pitchPoint.y()-pt.y())/(pitchPoint.x()-pt.x());
-    float b = pt.y()-a*pt.x();
+    double a = (pitchPoint.y()-pt.y())/(pitchPoint.x()-pt.x());
+    double b = pt.y()-a*pt.x();
     return QPointF(0,a*0+b);
 }
 
-float QcAttitudeMeter::getStartAngle(const QRectF& tmpRect)
+double QcAltitudeMeter::startAngle(const QRectF& tmpRect) const
 {
-    float r = getRadius(tmpRect);
+    double r = getRadius(tmpRect);
     QPointF pt1 = getPoint(mRoll,tmpRect);
     pt1.setY(pt1.y()-mPitchOffset);
     QPointF pitchPoint = QPointF(tmpRect.center().x(),tmpRect.center().y()-mPitchOffset);
@@ -848,8 +1314,8 @@ float QcAttitudeMeter::getStartAngle(const QRectF& tmpRect)
     ///////////////////////////////////////
     QPainterPath path1;
     path1.moveTo(pitchPoint);
-    path1.lineTo(getIntersection(r,pitchPoint,pt1)+QPointF(0,5));
-    path1.lineTo(getIntersection(r,pitchPoint,pt1)+QPointF(0,-5));
+    path1.lineTo(intersection(r,pitchPoint,pt1)+QPointF(0,5));
+    path1.lineTo(intersection(r,pitchPoint,pt1)+QPointF(0,-5));
 
     QPainterPath path2;
     path2.addEllipse(tmpRect);
@@ -858,11 +1324,10 @@ float QcAttitudeMeter::getStartAngle(const QRectF& tmpRect)
     return getAngle(p,tmpRect);
 }
 
-void QcAttitudeMeter::draw(QPainter *painter)
+void QcAltitudeMeter::draw(QPainter *painter)
 {
-    resetRect();
-    QRectF tmpRect = adjustRect(position());
-    float r = getRadius(tmpRect);
+    QRectF tmpRect = itemRect();
+    double r = getRadius(tmpRect);
     if(mPitch<0)
         mPitchOffset = 0.0135*r*mPitch;
     else
@@ -878,14 +1343,12 @@ void QcAttitudeMeter::draw(QPainter *painter)
     drawHandle(painter);
 
     drawDegrees(painter);
-
 }
 
-void QcAttitudeMeter::drawDegrees(QPainter *painter)
+void QcAltitudeMeter::drawDegrees(QPainter *painter)
 {
-    resetRect();
-    QRectF tmpRect = adjustRect(position());
-    float r = getRadius(tmpRect);
+    QRectF tmpRect = itemRect();
+    double r = getRadius(tmpRect);
     QPen pen;
 
     pen.setColor(Qt::white);
@@ -906,7 +1369,7 @@ void QcAttitudeMeter::drawDegrees(QPainter *painter)
 }
 
 
-void QcAttitudeMeter::drawDegree(QPainter * painter, const QRectF& tmpRect,float deg)
+void QcAltitudeMeter::drawDegree(QPainter * painter, const QRectF& tmpRect,double deg)
 {
     QPointF pt1 = getPoint(deg,tmpRect);
     QPointF pt2 = tmpRect.center();
@@ -918,7 +1381,7 @@ void QcAttitudeMeter::drawDegree(QPainter * painter, const QRectF& tmpRect,float
 }
 
 
-void QcAttitudeMeter::drawUpperEllipse(QPainter *painter, const QRectF &tmpRect)
+void QcAltitudeMeter::drawUpperEllipse(QPainter *painter, const QRectF &tmpRect)
 {
 
     QLinearGradient radialGrad1(tmpRect.topLeft(),tmpRect.bottomRight());
@@ -930,10 +1393,10 @@ void QcAttitudeMeter::drawUpperEllipse(QPainter *painter, const QRectF &tmpRect)
     radialGrad1.setColorAt(.8, clr2);
 
 
-    float offset = getStartAngle(tmpRect);
-    float startAngle = 180-offset;
-    float endAngle = offset-2*mRoll;
-    float span =endAngle-startAngle;
+    double offset = startAngle(tmpRect);
+    double startAngle = 180-offset;
+    double endAngle = offset-2*mRoll;
+    double span =endAngle-startAngle;
 
     painter->setBrush(radialGrad1);
     painter->drawChord(tmpRect,16*startAngle,16*span);
@@ -941,7 +1404,7 @@ void QcAttitudeMeter::drawUpperEllipse(QPainter *painter, const QRectF &tmpRect)
 }
 
 
-void QcAttitudeMeter::drawLowerEllipse(QPainter *painter, const QRectF &tmpRect)
+void QcAltitudeMeter::drawLowerEllipse(QPainter *painter, const QRectF &tmpRect)
 {
     QLinearGradient radialGrad2(tmpRect.topLeft(),tmpRect.bottomRight());
     QColor clr1 = QColor(139,119,118);
@@ -949,10 +1412,10 @@ void QcAttitudeMeter::drawLowerEllipse(QPainter *painter, const QRectF &tmpRect)
     radialGrad2.setColorAt(0, clr1);
     radialGrad2.setColorAt(.8, clr2);
 
-    float offset = getStartAngle(tmpRect);
-    float startAngle = 180+offset;
-    float endAngle = offset-2*mRoll;
-    float span =endAngle+startAngle;
+    double offset = startAngle(tmpRect);
+    double startAngle = 180+offset;
+    double endAngle = offset-2*mRoll;
+    double span =endAngle+startAngle;
 
     painter->setPen(Qt::NoPen);
     painter->setBrush(radialGrad2);
@@ -960,9 +1423,9 @@ void QcAttitudeMeter::drawLowerEllipse(QPainter *painter, const QRectF &tmpRect)
 
 }
 
-void QcAttitudeMeter::drawPitchSteps(QPainter *painter, const QRectF &tmpRect)
+void QcAltitudeMeter::drawPitchSteps(QPainter *painter, const QRectF &tmpRect)
 {
-    float r = getRadius(tmpRect);
+    double r = getRadius(tmpRect);
     QPointF center = tmpRect.center();
     painter->save();
     painter->translate(center.x(),center.y()-mPitchOffset);
@@ -1001,10 +1464,10 @@ void QcAttitudeMeter::drawPitchSteps(QPainter *painter, const QRectF &tmpRect)
     painter->restore();
 }
 
-void QcAttitudeMeter::drawHandle(QPainter *painter)
+void QcAltitudeMeter::drawHandle(QPainter *painter)
 {
     QRectF tmpRct = adjustRect(15);
-    float r = getRadius(tmpRct);
+    double r = getRadius(tmpRct);
     QPen pen;
     pen.setColor(Qt::gray);
     pen.setWidthF(0.25*r);
@@ -1042,7 +1505,7 @@ void QcAttitudeMeter::drawHandle(QPainter *painter)
     tmpPt.setX(center.x()-r);
     tmpPt.setY(center.y()+4*r);
     trapPoly.append(tmpPt);
-    tmpRct = adjustRect(position());
+    tmpRct = itemRect();
     trapPoly.append(getPoint(290,tmpRct));
     trapPoly.append(getPoint(250,tmpRct));
     tmpPt = center;
