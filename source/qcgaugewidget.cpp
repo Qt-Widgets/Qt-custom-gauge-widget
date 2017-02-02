@@ -37,6 +37,7 @@
 #include <QLabel>
 
 #include <qtlabb/common/qtlabb_diag.h>
+#include <qtlabb/common/StreamHelpers.h>
 
 /**
  * This is private QT API
@@ -52,9 +53,10 @@ QT_END_NAMESPACE
 
 QcGaugeWidget::QcGaugeWidget(QWidget *parent) :
     QWidget(parent),
-    mSizeChanged(true)
+    mUpdateBufferImages(true),
+    mBorderPen(Qt::NoPen)
 {
-    setMinimumSize(250,250);
+
 }
 
 
@@ -213,7 +215,13 @@ void QcGaugeWidget::updateBufferImages()
 	{
 		mItems.at(i)->draw(&ForegroundPainter);
 	}
-	mSizeChanged = false;
+	mUpdateBufferImages = false;
+}
+
+
+void QcGaugeWidget::invalidateBufferImages()
+{
+	mUpdateBufferImages = true;
 }
 
 
@@ -237,6 +245,12 @@ QImage QcGaugeWidget::blurShadowImage(QImage& Source) const
 }
 
 
+void QcGaugeWidget::setBorderPen(const QPen& Pen)
+{
+	mBorderPen = Pen;
+}
+
+
 QBrush QcGaugeWidget::shadowBrush() const
 {
 	return QBrush(QColor(0, 0, 0, 160));
@@ -252,7 +266,7 @@ QPointF QcGaugeWidget::shadowOffset() const
 
 void QcGaugeWidget::paintEvent(QPaintEvent* PaintEvent)
 {
-	if (mSizeChanged)
+	if (mUpdateBufferImages)
 	{
 		updateBufferImages();
 	}
@@ -268,12 +282,20 @@ void QcGaugeWidget::paintEvent(QPaintEvent* PaintEvent)
     	mItems.at(mNeedleItemIndex)->draw(&painter);
     }
     painter.drawImage(QPointF(0, 0), mForegeroundBuffer);
+    if (mBorderPen.style() != Qt::NoPen)
+    {
+    	painter.setBrush(Qt::NoBrush);
+    	painter.setPen(mBorderPen);
+    	float PenWidth = mBorderPen.width() / 2.0 + 1;
+    	QRectF EllipseRect = QRectF(contentsRect()).adjusted(PenWidth, PenWidth, -PenWidth - 1, -PenWidth - 1);
+    	painter.drawEllipse(EllipseRect);
+    }
 }
 
 
 void QcGaugeWidget::resizeEvent(QResizeEvent* event)
 {
-	mSizeChanged = true;
+	mUpdateBufferImages = true;
 	QWidget::resizeEvent(event);
 	emit sizeChanged(event->size());
 }
@@ -306,7 +328,7 @@ double QcItem::position() const
 
 QRectF QcItem::widgetRect() const
 {
-    QRect Rect = mGaugeWidget->rect();
+    QRectF Rect(mGaugeWidget->contentsRect().topLeft(), mGaugeWidget->contentsRect().bottomRight());
     int Diameter = qMin(Rect.width(), Rect.height());
     Rect.setSize(QSize(Diameter, Diameter));
     return Rect;
@@ -330,12 +352,14 @@ void QcItem::setPosition(double position)
     update();
 }
 
+
 QRectF QcItem::adjustRect(double percentage) const
 {
-	QRectF Rect = widgetRect();
+	QRectF Rect = widgetRect().adjusted(2, 2, -2, -2);
     double r = getRadius(Rect);
     double offset =   r - (percentage * r) / 100.0;
-    return Rect.adjusted(offset, offset, -offset, -offset);
+    QRectF Result = Rect.adjusted(offset, offset, -offset, -offset);
+    return Result;
 }
 
 double QcItem::getRadius(const QRectF &tmpRect)
@@ -387,7 +411,8 @@ void QcScaleItem::setRange(double minValue, double maxValue)
         throw( InvalidValueRange);
     mMinValue = minValue;
     mMaxValue = maxValue;
-
+    mGaugeWidget->invalidateBufferImages();
+    update();
 }
 
 void QcScaleItem::setDegreeRange(double minDegree, double maxDegree)
@@ -411,6 +436,7 @@ void QcScaleItem::setMinimumValue(double minValue)
     if(minValue>mMaxValue)
         throw (InvalidValueRange);
     mMinValue = minValue;
+    mGaugeWidget->invalidateBufferImages();
     update();
 }
 
@@ -420,22 +446,35 @@ void QcScaleItem::setMaximumValue(double maxValue)
     if(maxValue<mMinValue )
         throw (InvalidValueRange);
     mMaxValue = maxValue;
+    mGaugeWidget->invalidateBufferImages();
     update();
 }
 
-void QcScaleItem::setMinimumValueAngle(double minDegree)
+void QcScaleItem::setMinimumDegree(double minDegree)
 {
     if(minDegree>mMaxDegree)
         throw (InvalidDegreeRange);
     mMinDegree = minDegree;
     update();
 }
-void QcScaleItem::setMaximumValueAngle(double maxDegree)
+void QcScaleItem::setMaximumDegree(double maxDegree)
 {
     if(maxDegree<mMinDegree)
         throw (InvalidDegreeRange);
     mMaxDegree = maxDegree;
     update();
+}
+
+
+double QcScaleItem::maximumDegree() const
+{
+	return mMaxDegree;
+}
+
+
+double QcScaleItem::minimumDegree() const
+{
+	return mMinDegree;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -724,7 +763,8 @@ QcLabelItem::QcLabelItem(QcGaugeWidget* ParentWidget) :
     QcItem(ParentWidget),
     mAngle(270),
     mText("%"),
-    mColor(Qt::black)
+    mColor(Qt::black),
+    mScaleFactor(1)
 {
     setPosition(50);
 }
@@ -733,8 +773,8 @@ void QcLabelItem::draw(QPainter *painter)
 {
     QRectF tmpRect = itemRect();
     double r = getRadius(widgetRect());
-    QFont font("Meiryo UI", r/10.0, QFont::Bold);
-    painter->setFont(font);
+    mFont.setPointSizeF(r / 10.0 * mScaleFactor);
+    painter->setFont(mFont);
     painter->setPen(QPen(mColor));
 
     QPointF txtCenter = getPoint(mAngle,tmpRect);
@@ -743,7 +783,7 @@ void QcLabelItem::draw(QPainter *painter)
     QRectF txtRect(QPointF(0,0), sz );
     txtRect.moveCenter(txtCenter);
 
-    painter->drawText( txtRect, Qt::TextSingleLine,mText );
+    painter->drawText( txtRect, Qt::TextSingleLine, mText);
 
 }
 
@@ -781,6 +821,23 @@ const QColor& QcLabelItem::color() const
     return mColor;
 }
 
+void QcLabelItem::setFont(const QFont& font)
+{
+	mFont = font;
+}
+
+
+const QFont& QcLabelItem::font() const
+{
+	return mFont;
+}
+
+
+void QcLabelItem::setScaleFactor(float Factor)
+{
+	mScaleFactor = Factor;
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -799,7 +856,7 @@ void QcArcItem::draw(QPainter *painter)
 
     QPen pen;
     pen.setColor(mColor);
-    pen.setWidthF(r/40);
+    pen.setWidthF(qMax(r/40.0, 1.0));
     painter->setPen(pen);
     painter->drawArc(tmpRect,-16*(mMinDegree+180),-16*(mMaxDegree-mMinDegree));
 }
@@ -813,7 +870,8 @@ void QcArcItem::setColor(const QColor &color)
 ///////////////////////////////////////////////////////////////////////////////////////////
 
 QcColorBand::QcColorBand(QcGaugeWidget* ParentWidget) :
-    QcScaleItem(ParentWidget)
+    QcScaleItem(ParentWidget),
+    mBandStartValue(0)
 {
     QColor tmpColor;
     tmpColor.setAlphaF(0.1);
@@ -848,7 +906,7 @@ void QcColorBand::draw(QPainter *painter)
     double r = getRadius(widgetRect());
     QPen pen;
     pen.setCapStyle(Qt::FlatCap);
-    pen.setWidthF(r/20.0);
+    pen.setWidthF(r/20.0 * mPenWidthScaleFactor);
     painter->setBrush(Qt::NoBrush);
     double offset = getDegFromValue(mBandStartValue);
     for(int i = 0;i<mBandColors.size();i++){
@@ -869,6 +927,11 @@ void QcColorBand::setColors(const QList<QPair<QColor, double> > &colors)
 {
     mBandColors = colors;
     update();
+}
+
+void QcColorBand::setPenWidthScaleFactor(float Factor)
+{
+	mPenWidthScaleFactor = Factor;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -898,13 +961,11 @@ void QcDegreesItem::draw(QPainter *painter)
         path.moveTo(pt);
         path.lineTo(tmpRect.center());
         pt = path.pointAtPercent(0.03);
-        QPointF newPt = path.pointAtPercent(0.13);
+        QPointF newPt = path.pointAtPercent(mSubDegree ? 0.09 : 0.13);
 
         QPen pen;
         pen.setColor(mColor);
-        if(!mSubDegree)
-            pen.setWidthF(r/25.0);
-
+        pen.setWidthF(mSubDegree ? qMax(r/75.0, 0.5) : qMax(r/25.0, 0.75));
         painter->setPen(pen);
         painter->drawLine(pt,newPt);
 
@@ -940,7 +1001,9 @@ QcNeedleItem::QcNeedleItem(QcGaugeWidget* ParentWidget) :
     mNeedleType(FeatherNeedle),
     mLabel(0),
     mBrush(Qt::black),
-    mDropShadow(false)
+    mDropShadow(false),
+    mThicknessFactor(1),
+    mDecimals(1)
 {
 	connect(ParentWidget, SIGNAL(sizeChanged(const QSize&)), this,
 		SLOT(onWidgetSizeChanged(const QSize&)));
@@ -1034,6 +1097,18 @@ void QcNeedleItem::onWidgetSizeChanged(const QSize& Size)
 }
 
 
+void QcNeedleItem::setDecimals(int Decimals)
+{
+	mDecimals = Decimals;
+}
+
+
+int QcNeedleItem::decimals() const
+{
+	return mDecimals;
+}
+
+
 void QcNeedleItem::setValue(double value)
 {
     if(value<mMinValue)
@@ -1043,7 +1118,7 @@ void QcNeedleItem::setValue(double value)
     else
         mCurrentValue = value;
     if(mLabel!=0)
-        mLabel->setText(QString::number(mCurrentValue),false);
+        mLabel->setText(QString::number(mCurrentValue, 'f', mDecimals),false);
     update();
 }
 
@@ -1130,13 +1205,19 @@ void QcNeedleItem::setCustomNeedle(const QVector<QPointF>& NeedlePoly)
 }
 
 
+void QcNeedleItem::setThicknessFactor(float Value)
+{
+	mThicknessFactor = Value;
+}
+
+
 QPolygonF QcNeedleItem::createDiamonNeedle(double r) const
 {
     QVector<QPointF> tmpPoints;
     tmpPoints.append(QPointF(0.0, 0.0));
-    tmpPoints.append(QPointF(-r/20.0,r/20.0));
+    tmpPoints.append(QPointF(-r/20.0 * mThicknessFactor, r/20.0));
     tmpPoints.append(QPointF(0.0, r));
-    tmpPoints.append(QPointF(r/20.0,r/20.0));
+    tmpPoints.append(QPointF(r/20.0 * mThicknessFactor, r/20.0));
     return tmpPoints;
 }
 
@@ -1144,8 +1225,8 @@ QPolygonF QcNeedleItem::createTriangleNeedle(double r) const
 {
     QVector<QPointF> tmpPoints;
     tmpPoints.append(QPointF(0.0, r));
-    tmpPoints.append(QPointF(-r/40, 0.0));
-    tmpPoints.append(QPointF(r/40,0.0));
+    tmpPoints.append(QPointF(-r/40 * mThicknessFactor, 0.0));
+    tmpPoints.append(QPointF(r/40 * mThicknessFactor,0.0));
     return tmpPoints;
 }
 
@@ -1153,10 +1234,10 @@ QPolygonF QcNeedleItem::createFeatherNeedle(double r) const
 {
     QVector<QPointF> tmpPoints;
     tmpPoints.append(QPointF(0.0, r));
-    tmpPoints.append(QPointF(-r/40.0, 0.0));
-    tmpPoints.append(QPointF(-r/15.0, -r/5.0));
-    tmpPoints.append(QPointF(r/15.0,-r/5));
-    tmpPoints.append(QPointF(r/40.0,0.0));
+    tmpPoints.append(QPointF(-r/40.0 * mThicknessFactor, 0.0));
+    tmpPoints.append(QPointF(-r/15.0 * mThicknessFactor, -r/5.0));
+    tmpPoints.append(QPointF(r/15.0 * mThicknessFactor, -r/5));
+    tmpPoints.append(QPointF(r/40.0 * mThicknessFactor,0.0));
     return tmpPoints;
 }
 
@@ -1215,7 +1296,8 @@ QcValuesItem::QcValuesItem(QcGaugeWidget* ParentWidget) :
     QcScaleItem(ParentWidget),
     mStep(10),
     mColor(Qt::black),
-    mFont("Meiryo UI",0, QFont::Bold)
+    mScaleFactor(1),
+    mDecimals(1)
 {
     setPosition(70);
 }
@@ -1225,7 +1307,7 @@ void QcValuesItem::draw(QPainter*painter)
 {
     QRectF tmpRect = widgetRect();
     double r = getRadius(adjustRect(99));
-    mFont.setPointSizeF(0.08 * r);
+    mFont.setPointSizeF(0.08 * r * mScaleFactor);
 
     painter->setFont(mFont);
     painter->setPen(mColor);
@@ -1235,7 +1317,7 @@ void QcValuesItem::draw(QPainter*painter)
         QPainterPath path;
         path.moveTo(pt);
         path.lineTo(    tmpRect.center());
-        QString strVal = QString::number(val);
+        QString strVal = QString::number(val, 'f', mDecimals);
         QFontMetrics fMetrics = painter->fontMetrics();
         QSize sz = fMetrics.size( Qt::TextSingleLine, strVal );
         QRectF txtRect(QPointF(0,0), sz );
@@ -1244,6 +1326,12 @@ void QcValuesItem::draw(QPainter*painter)
 
         painter->drawText( txtRect, Qt::TextSingleLine, strVal );
     }
+}
+
+
+void QcValuesItem::setDecimals(int Value)
+{
+	mDecimals = Value;
 }
 
 void QcValuesItem::setStep(double step)
@@ -1267,6 +1355,11 @@ void QcValuesItem::setFont(const QFont& font)
 const QFont& QcValuesItem::font() const
 {
 	return mFont;
+}
+
+void QcValuesItem::setScaleFactor(float ScaleFactor)
+{
+	mScaleFactor = ScaleFactor;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////

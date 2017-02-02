@@ -85,9 +85,11 @@ public:
     QImage blurShadowImage(QImage& Source) const;
     QBrush shadowBrush() const;
     QPointF shadowOffset() const;
+    void setBorderPen(const QPen& Pen);
 
 public:
     virtual int heightForWidth(int w) const;
+    void invalidateBufferImages();
 
 protected:
     virtual void paintEvent(QPaintEvent*);
@@ -99,8 +101,9 @@ private:
     QImage mBackgroundBuffer; ///<Image buffer for the background
 	QImage mForegeroundBuffer; ///<Image buffer for the foreground
     QList <QcItem*> mItems;
-    bool mSizeChanged;
+    bool mUpdateBufferImages;
     int mNeedleItemIndex;
+    QPen mBorderPen;
 };
 
 /**
@@ -144,8 +147,10 @@ public:
     virtual ~QcScaleItem() {}
 
     void setDegreeRange(double minDegree,double maxDegree);
-    void setMinimumValueAngle(double minDegree);
-    void setMaximumValueAngle(double maxDegree);
+    void setMinimumDegree(double minDegree);
+    void setMaximumDegree(double maxDegree);
+    double maximumDegree() const;
+    double minimumDegree() const;
 
     void setRange(double minValue,double maxValue);
     void setMinimumValue(double minValue);
@@ -244,11 +249,20 @@ public:
     const QString& text() const;
     void setColor(const QColor& color);
     const QColor& color() const;
+    void setFont(const QFont& font);
+    const QFont& font() const;
+    /**
+     * Set the scale factor to scale the label.
+     * A factor of 1 is the default scaling. A factor of 2 doubles the size
+     */
+    void setScaleFactor(float Factor);
 
 private:
     double mAngle;
     QString mText;
     QColor mColor;
+    QFont mFont;
+    float mScaleFactor;
 };
 
 /**
@@ -261,6 +275,7 @@ public:
     explicit QcArcItem(QcGaugeWidget* ParentWidget);
     void draw(QPainter*);
     void setColor(const QColor& color);
+    inline const QColor& color() const {return mColor;}
 
 private:
     QColor mColor;
@@ -277,11 +292,18 @@ public:
     void draw(QPainter*);
     void setColors(const QList<QPair<QColor,double> >& colors);
 
+    /**
+     * Set scale factor for pen width.
+     * The default factor is 1.
+     */
+    void setPenWidthScaleFactor(float Factor);
+
 private:
    QPainterPath createSubBand(double from,double sweep);
 
    QList<QPair<QColor,double> > mBandColors;
    double mBandStartValue;
+   float mPenWidthScaleFactor;
 };
 
 /**
@@ -334,6 +356,25 @@ public:
     void setNeedle(QcNeedleItem::NeedleType needleType);
     void setCustomNeedle(const QVector<QPointF>& NeedlePolygon);
 
+    /**
+     * Set thickness of standard needle.
+     * The factor is a scaling factor. A value of 1 is the default value.
+     * A value of 2 doubles the thickness
+     */
+    void setThicknessFactor(float Value);
+
+    /**
+     * Sets how many decimals the needle will use for displaying and
+     * interpreting doubles.
+     */
+    void setDecimals(int Decimals);
+
+    /**
+     * Returns how many decimals the needle will use for displaying and
+     * interpreting doubles.
+     */
+    int decimals() const;
+
 public slots:
     void setValue(double value);
     void setValueRange(double minValue,double maxValue);
@@ -361,6 +402,8 @@ private:
     QBrush mBrush;
     QImage mDropShadowImage;
     bool mDropShadow;
+    float mThicknessFactor;
+    int mDecimals;
 };
 
 
@@ -376,11 +419,20 @@ public:
     void setColor(const QColor& color);
     void setFont(const QFont& font);
     const QFont& font() const;
+    void setDecimals(int Value);
+
+    /**
+     * Set the scale factor to scale the label.
+     * A factor of 1 is the default scaling. A factor of 2 doubles the size
+     */
+    void setScaleFactor(float ScaleFactor);
 
 private:
     double mStep;
     QColor mColor;
     QFont mFont;
+    float mScaleFactor;
+    int mDecimals;
 };
 
 
